@@ -1,0 +1,128 @@
+#!/bin/zsh
+
+if [[ -z "$1" ]] ; then
+	echo "Request token not provided. Please call command with compliance officer request token as argument"
+	exit
+fi
+
+REQUEST_TOKEN=$1
+BASE_URL=https://webexapis.com/v1
+
+
+coid=$(curl -s ${BASE_URL}/people/me -H "Authorization: Bearer ${REQUEST_TOKEN}" | jq '.id' | sed -e 's/"//g') 
+
+if [[ -z ${coid} ]]; then
+    echo "Cannot retrieve your id. Token expired or invalid? Exiting"
+    exit
+else
+    echo "Your id is ${coid}"
+fi
+
+
+#retrieve all rooms we are in
+rooms=("${(@f)$(curl -s ${BASE_URL}/rooms -H "Authorization: Bearer ${REQUEST_TOKEN}" | jq '.items[]?.id' )}")
+
+if [[ -z ${rooms} ]]; then
+    echo "You are not part of any rooms"
+else
+    echo "you are part of the following rooms"
+    echo ${rooms}
+fi
+
+
+
+#that's the file we keep our webhooks with the URL and the index offset we have
+#the file should have the following entries
+#type viewID ID
+#example call-created 93u3k 5
+#the meaning would be the webhook name which is resource-event theUUIDforTheWebhookInbox mostRecentID displayed already
+#we start from a clean slate so remove it since we are building a new webhookinbox
+if [[ -e webhookfile ]] {
+	rm webhookfile
+}
+
+#retrieve all the webhooks in the account
+webhookids=("${(@f)$(curl -s ${BASE_URL}/webhooks -H "Authorization: Bearer ${REQUEST_TOKEN}" | jq '.items[]?.id' )}")
+
+echo $webhookids
+
+#deletes ALL existing webhooks from account
+function deleteExistingWebhooks {
+    echo "\nI am about to delete all your account webhooks" 
+
+    #iterate over each webhook and delete it
+    for id in $webhookids; do
+    #quotes are a leftover artifact from the above parsing
+    curr=$(echo ${id} | sed 's/"//g')
+    echo "deleting webhookid ${curr}"
+    curl -s -X DELETE ${BASE_URL}/webhooks/${curr} -H "Authorization: Bearer ${REQUEST_TOKEN}"
+    done
+
+    echo "all account webhooks deleted"
+}
+
+
+if [[ -n ${webhookids[@]:0:1} ]]; then
+  read -q "asw?Do you want to delete all existing account webhooks?"
+  if [[ $asw = 'y' ]]; then
+	deleteExistingWebhooks
+  fi
+fi
+
+#declares it as an associative array
+typeset -A whnametype
+#we set the targetURL as empty until we are ready to fill it in
+#whnametype=("calls_created" "" "calls_updated" "" "callMemberships_created" "" "callMemberships_updated" "")
+#whnametype=("all_all" "")
+whnametype=("messages_created" "")
+
+#establish 1 new webbhokinboxes on webhookinboxdotcom
+#these are messages created ownedBy org for the inline file dlp
+#the webhookinbox URL's look like the following
+#for the inbox
+#http://api.webhookinbox.com/i/UUID/in/
+#for retrieval
+#http://webhookinbox.com/view/UUID/
+#we are going to compose these
+for webhookname in ${(@k)whnametype}; do
+  inboxid=$(curl -v -X POST http://api.webhookinbox.com/create/ | jq '.base_url' | awk -F/ '{print $5}')
+  
+  whnametype[${webhookname}]=http://api.webhookinbox.com/i/${inboxid}/in/
+  viewurl=http://webhookinbox.com/view/${inboxid}/
+  echo "see your webhook for ${webhookname} at ${viewurl}"
+  retrievalUrl=http://api.webhookinbox.com/i/${inboxid}/items/
+  identifier=(${webhookname} ${retrievalUrl} -1)
+  echo $identifier >> webhookfile
+  #let's launch the tabs with the URL
+ /usr/bin/open -a "/Applications/Google Chrome.app" ${viewurl}
+done
+
+echo "A Chrome tab should have opened that will receive the webhook. Also the webhookfile should have 1 entry"
+
+#let's now register this webhook in the account 
+for wh in ${(@k)whnametype}; do
+	name=${wh}
+	resource=$(echo ${wh} | awk -F_ '{print $1}')
+	event=$(echo ${wh} | awk -F_ '{print $2}')
+	targetUrl=${(P)wh}
+
+
+        #echo "resource ${resource}"
+        #echo "name ${name}"
+        #echo "event ${event}"
+        #echo "targetURl ${targetUrl}"
+
+        #regular webhook
+        #jsonObj="{\"name\": \"${name}\", \"resource\": \"${resource}\", \"event\": \"${event}\", \"targetUrl\": \"${whnametype[${wh}]}\" }"
+        #org wide webhook
+        jsonObj="{\"name\": \"${name}\", \"resource\": \"${resource}\", \"event\": \"${event}\", \"targetUrl\": \"${whnametype[${wh}]}\", \"ownedBy\": \"org\" }"
+        echo $jsonObj
+
+        whidnew=$(curl -s -X POST ${BASE_URL}/webhooks/ -H "Authorization: Bearer ${REQUEST_TOKEN}" -H "Content-type: application/json" -d $jsonObj | jq '.id')
+        echo "registered webhook ${whidnew} for ${name} in your account"
+done
+
+
+
+
+

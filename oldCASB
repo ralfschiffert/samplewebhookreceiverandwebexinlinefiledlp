@@ -1,0 +1,46 @@
+#!/bin/zsh
+
+# we need to call this with the CO token since the CO needs to approve or reject
+if [[ -z "$1" ]] ; then
+        echo "Request token not provided. Please call command with compliance officer request token as argument"
+        exit
+fi
+
+REQUEST_TOKEN=$1
+
+BASE_URL=https://webexapis.com/v1
+
+function deleteFile() {
+   echo "deleting file"
+   msgUrl=$BASE_URL"/messages/${id}"
+   del=$(curl -s -X DELETE -H "Authorization: Bearer ${REQUEST_TOKEN}" ${msgUrl})
+}
+
+while true; do
+    # generally we want	to query from 3 minutes before to 1 minute before 
+    from=$(date  -j -v "-2M" -u +"%Y-%m-%dT%H:%M:%S"".000Z")
+    to=$(date  -j -v "-1M" -u +"%Y-%m-%dT%H:%M:%S"".000Z") 
+
+    echo "from: ${from}"
+    echo "to: ${to}"
+    
+
+    rawresponse=$(curl -s -m 20 -H "Authorization: Bearer ${REQUEST_TOKEN}" $BASE_URL"/events?from=${from}&to=${to}")
+
+    # echo $BASE_URL"/events?from=${from}&to=${to}"
+    # echo "DEBUG response ${rawrepsonse}"
+
+
+    echo "rawresponse is ${rawresponse}"
+
+    id=$(echo $rawresponse | jq '.items[-1].data.id' | sed 's/"//g' )
+    echo "found id is ${id}"
+   
+    if [[ ${id} =~ "^Y2.*" ]]; then
+        deleteFile
+    fi 
+
+    sleep 60
+
+done
+

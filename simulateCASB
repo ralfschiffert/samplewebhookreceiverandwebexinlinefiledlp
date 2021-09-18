@@ -1,0 +1,112 @@
+#!/bin/zsh
+
+# we need to call this with the CO token since the CO needs to approve or reject
+if [[ -z "$1" ]] ; then
+        echo "Request token not provided. Please call command with compliance officer request token as argument"
+        exit
+fi
+
+REQUEST_TOKEN=$1
+
+# we are going to trp the ctrl c which will let us update the index file
+# trap ctrl-c and call ctrl_c() function
+trap ctrl_c INT
+
+function ctrl_c() {
+   echo "** Trapped CTRL-C"
+   identifier=(${name} ${url} ${index})
+   echo $identifier >> webhookfilen
+   mv webhookfilen webhookfile
+   exit
+}
+
+
+function rjct() {
+   echo "rejecting file at ${contentUrl}"
+   reject=$(curl -s -X PUT ${contentUrl}"?result=reject" -H "Authorization: Bearer ${REQUEST_TOKEN}" -H "Content-type: application/json")
+   echo $reject
+}
+
+
+function apprv() {
+   echo "approving file at ${contentUrl}"
+   approve=$(curl -s -X PUT -H "Authorization: Bearer ${REQUEST_TOKEN}" -H "Content-type: application/json" ${contentUrl}"?result=approve")
+   echo $approve
+}
+
+
+function dwnldFileForInspection() {
+   cd filesInspected
+   dwl=$(curl -s --remote-name --remote-header-name ${contentUrl}"?allow=dlpEvaluating,dlpUnchecked" -H "Authorization: Bearer ${REQUEST_TOKEN}")
+   cd ..
+}
+
+# we start fresh
+if [[ -e webhookfilen ]] {
+        rm webhookfilen
+}
+
+if [[ -e filesInspected ]] {
+	rm -rf filesInspected
+}
+mkdir filesInspected
+
+
+# read the input from the webhookfile
+# the file contains webhookName - webhookUrl - id 
+# we want to read from the id onward so as to only check new entries
+i=$(head -n 1 webhookfile)
+
+name=$(echo $i | awk '{print $1}')
+index=$(echo $i | awk '{print $3}')
+url=$(echo $i | awk '{print $2}')
+accessurl=${url}"?order=created&since=id:"${index}
+
+if [[ $name -ne "messages_created" ]] ; then
+    echo "Didn't fiind right entry in webhookfile. Did you run the establishWebhookInbox first?"
+    exit
+else
+    echo "finding the right resource ${name} at ${accessurl}"
+fi
+
+while true; do
+    accessurl=${url}"?order=created&since=id:"${index}
+ 
+    # echo "DEBUG accessing URL ${accessurl}"
+
+    rawresponse=$(curl -s -m 20 -X GET $accessurl)
+    # echo "DEBUG response ${rawrepsonse}"
+
+    if [[ -z ${rawresponse} ]] ; then
+        # echo "DEBUG didn't get any response"
+	continue
+    fi
+
+    id=$(echo $rawresponse | jq '.items[-1].id' | sed 's/"//g' )
+    # echo "found id is ${id}"
+
+    (( index=$id + 1 ))
+    # echo "index is ${index}"
+    # response=$(echo $rawresponse | jq '.items[].headers' )
+    response=$(echo $rawresponse | jq '.items[].body' | sed 's/^"//' | sed 's/"$//' | sed 's/\\//g' )
+    contentUrl=$(echo  $response | jq '.data.files[]' | sed 's/^"//' | sed 's/"$//')
+    contentUrlShortened=$(echo $contentUrl | sed -e 's/\(^.*\)\(\/v1\/contents\/.*\)\(\?allow=.*\)/\2/')
+    #contentUrl="https://api.ciscospark.com"${contentUrlShortened}
+    contentUrl="https://hydra-r.wbx2.com"${contentUrlShortened}
+ 
+
+    echo $contentUrl
+    # download the file for inspection
+    dwnldFileForInspection
+
+    read "asw?Do you want to reject(r) or approve(a) this file?"
+    if [[ $asw = 'r' ]]; then
+        rjct
+    else
+        apprv
+    fi
+
+     
+    sleep 15
+done
+
